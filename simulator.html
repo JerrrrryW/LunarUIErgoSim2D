@@ -213,6 +213,10 @@
     /* --- DOM ELEMENTS --- */
     const canvas = document.getElementById('worldCanvas');
     const ctx = canvas.getContext('2d');
+
+    // 可选的真实月面背景纹理（请在同目录放一张 moon_surface.jpg，或改成你自己的文件名/URL）
+    const moonImage = new Image();
+    moonImage.src = 'moon_surface.jpg';
     const elAlert = document.getElementById('center-alert');
     const elAlertTitle = document.getElementById('alert-title');
     const elAlertSub = document.getElementById('alert-sub');
@@ -392,6 +396,26 @@
         ctx.save();
         ctx.translate(cx, cy);
 
+        // 月面影像背景（如果图片加载成功）
+        if (moonImage.complete && moonImage.naturalWidth) {
+            const imgW = moonImage.width;
+            const imgH = moonImage.height;
+            const scale = Math.max(canvas.width / imgW, canvas.height / imgH) * 1.2; // 稍微放大避免边缘
+            const drawW = imgW * scale;
+            const drawH = imgH * scale;
+
+            // 视差：飞船移动时背景随之明显平移
+            // 系数越大，背景“移动”越多；1 表示和世界坐标等比
+            const parallax = 0.4;
+            const offsetX = -drawW / 2 - ship.x * parallax;
+            const offsetY = -drawH / 2 - ship.y * parallax;
+
+            ctx.save();
+            ctx.globalAlpha = 0.7;
+            ctx.drawImage(moonImage, offsetX, offsetY, drawW, drawH);
+            ctx.restore();
+        }
+
         // 地形（和旧版本类似的“雷达山脉/陨石坑”）
         ctx.strokeStyle = '#223333';
         ctx.lineWidth = 1;
@@ -474,10 +498,10 @@
         drawLandingGrid(ctx, radarGridSize);
         ctx.restore();
 
-        // 速度向量（紫色，从飞船中心出发）
+        // 速度向量（紫色，从飞船中心出发，方向与实际速度一致）
         const velScale = 25;
         const vx = ship.vx * velScale;
-        const vy = -ship.vy * velScale;
+        const vy = ship.vy * velScale;
 
         ctx.save();
         ctx.strokeStyle = '#a855f7';
