@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>LUNAR HUD // 着陆诱导系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
+        :root {
+            --hud-color: #00ffcc; /* 青色主色调，类似战斗机HUD */
+            --hud-warn: #ff3333;
+            --hud-dim: rgba(0, 255, 204, 0.3);
+            --bg-dark: #050505;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--hud-color);
+            font-family: 'Share Tech Mono', monospace;
+            overflow: hidden; /* 禁止滚动，全屏体验 */
+            height: 100vh;
+            width: 100vw;
+            user-select: none;
+        }
+
+        /* 模拟 CRT/传感器 效果 */
+        .hud-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at center, #111 0%, #000 100%);
+            box-shadow: inset 0 0 100px rgba(0,0,0,0.9);
+            overflow: hidden;
+        }
+
+        /* 扫描线 */
+        .scanlines {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 4px, 6px 100%;
+            pointer-events: none;
+            z-index: 20;
+        }
+        
+        /* 屏幕噪点 */
+        .noise {
+            position: absolute;
+            top: -50%; left: -50%; right: -50%; bottom: -50%;
+            width: 200%; height: 200vh;
+            background: transparent url('http://assets.iceable.com/img/noise-transparent.png') repeat 0 0;
+            background-repeat: repeat;
+            animation: bg-animation .2s infinite;
+            opacity: 0.1;
+            pointer-events: none;
+            z-index: 19;
+        }
+        
+        @keyframes bg-animation {
+            0% { transform: translate(0,0) }
+            10% { transform: translate(-5%,-5%) }
+            20% { transform: translate(-10%,5%) }
+            30% { transform: translate(5%,-10%) }
+            40% { transform: translate(-5%,15%) }
+            50% { transform: translate(-10%,5%) }
+            60% { transform: translate(15%,0) }
+            70% { transform: translate(0,10%) }
+            80% { transform: translate(-15%,0) }
+            90% { transform: translate(10%,5%) }
+            100% { transform: translate(5%,0) }
+        }
+
+        /* 文本发光 */
+        .glow-text {
+            text-shadow: 0 0 5px var(--hud-color);
+        }
+        .glow-purple {
+            text-shadow: 0 0 5px #a855f7;
+            color: #d8b4fe;
+        }
+        .glow-warn {
+            text-shadow: 0 0 5px var(--hud-warn);
+            color: var(--hud-warn);
+        }
+
+        /* 绝对定位的 HUD 元素 */
+        .hud-element {
+            position: absolute;
+            z-index: 30;
+            pointer-events: none; /* 让点击穿透到 Canvas */
+        }
+
+        /* 边框装饰 */
+        .corner-bracket {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border: 2px solid var(--hud-color);
+            z-index: 25;
+            opacity: 0.6;
+        }
+        .tl { top: 20px; left: 20px; border-right: none; border-bottom: none; }
+        .tr { top: 20px; right: 20px; border-left: none; border-bottom: none; }
+        .bl { bottom: 20px; left: 20px; border-right: none; border-top: none; }
+        .br { bottom: 20px; right: 20px; border-left: none; border-top: none; }
+
+        /* 移动端控制按钮 */
+        .touch-control {
+            pointer-events: auto;
+            border: 1px solid var(--hud-dim);
+            background: rgba(0, 20, 20, 0.4);
+            color: var(--hud-color);
+            backdrop-filter: blur(2px);
+        }
+        .touch-control:active {
+            background: var(--hud-color);
+            color: #000;
+        }
+
+        /* 标尺样式 */
+        .tape-container {
+            overflow: hidden;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid var(--hud-dim);
+        }
+    </style>
+    <!-- Chosen Palette: HUD Cyan (#00ffcc) on Deep Space Black, with Purple Trajectory and Red Warnings -->
+    <!-- Application Structure Plan:
+         1. Fullscreen Canvas: Renders the "Sensor View" (Moon surface, target grid, physics vectors).
+         2. Overlay HUD Layer: HTML elements for numerical data (Speed tape, Alt tape, Fuel).
+         3. Touch Layer: Invisible or subtle buttons for interaction.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+</head>
+<body>
+
+<div class="hud-container" id="game-container">
+    
+    <!-- Visual Effects -->
+    <div class="scanlines"></div>
+    <div class="noise"></div>
+
+    <!-- CENTER ALERTS (success / failure overlay, keep existing) -->
+    <div id="center-alert" class="hud-element top-1/3 left-0 w-full text-center hidden">
+        <div class="inline-block bg-black/80 border border-red-500 px-6 py-4">
+            <h1 id="alert-title" class="text-3xl font-bold glow-warn mb-2">WARNING</h1>
+            <p id="alert-sub" class="text-red-300 text-sm">HIGH VELOCITY IMPACT PREDICTED</p>
+            <button id="restart-btn" class="mt-4 px-4 py-1 border border-red-500 text-red-500 hover:bg-red-900 pointer-events-auto">SYSTEM REBOOT</button>
+        </div>
+    </div>
+    
+    <!-- MOBILE CONTROLS (still保留手指操作，但改为更简洁样式) -->
+    <div class="hud-element bottom-6 left-6 flex gap-2 md:hidden pointer-events-auto">
+        <button id="btn-left" class="touch-control w-12 h-12 rounded-full text-xl font-bold">←</button>
+        <button id="btn-right" class="touch-control w-12 h-12 rounded-full text-xl font-bold">→</button>
+    </div>
+    <div class="hud-element bottom-6 right-6 flex gap-2 md:hidden pointer-events-auto">
+        <button id="btn-brake" class="touch-control w-12 h-12 rounded-full text-xs font-bold border-red-500 text-red-400">STOP</button>
+        <button id="btn-thrust" class="touch-control w-16 h-16 rounded-full text-2xl font-bold border-2 shadow-[0_0_15px_var(--hud-color)]">▲</button>
+    </div>
+
+    <!-- Fullscreen Canvas HUD -->
+    <canvas id="worldCanvas" class="w-full h-full object-cover"></canvas>
+
+</div>
+
+<script>
+    /* --- CONFIGURATION & STATE --- */
+    const CONFIG = {
+        gravity: 0.005,
+        thrust: 0.025, // Slightly lower for more "heavy" feel
+        rotationSpeed: 0.03,
+        worldSize: 3000,
+        gridSize: 100, // Size of the target landing pad
+        safeSpeed: 1.0, // m/s
+        safeDist: 60 // pixels radius
+    };
+
+    const STATE = {
+        menu: 0,
+        playing: 1,
+        landed: 2,
+        crashed: 3,
+        current: 1
+    };
+
+    const ship = {
+        x: -400, // relative to target (0,0)
+        y: 800,
+        vx: 0.8,
+        vy: -0.5,
+        angle: 0, // 0 is UP
+        fuel: 100
+    };
+
+    const input = {
+        up: false, left: false, right: false, brake: false
+    };
+
+    // Procedural Terrain Data
+    const terrainFeatures = [];
+    for(let i=0; i<60; i++) {
+        terrainFeatures.push({
+            x: (Math.random() - 0.5) * CONFIG.worldSize * 1.5,
+            y: (Math.random() - 0.5) * CONFIG.worldSize * 1.5,
+            r: 40 + Math.random() * 150,
+            type: Math.random() > 0.8 ? 'ridge' : 'crater'
+        });
+    }
+
+    /* --- DOM ELEMENTS --- */
+    const canvas = document.getElementById('worldCanvas');
+    const ctx = canvas.getContext('2d');
+    const elAlert = document.getElementById('center-alert');
+    const elAlertTitle = document.getElementById('alert-title');
+    const elAlertSub = document.getElementById('alert-sub');
+    const elRestart = document.getElementById('restart-btn');
+
+    // Telemetry (用于在 HUD 上绘制的实时数据)
+    const telemetry = {
+        speed: 0,          // 总速度 m/s
+        distance: 0,       // 距目标点距离 m
+        radialSpeed: 0,    // 朝向/远离目标的速度分量 m/s （<0 表示逼近）
+        headingDeg: 0,     // 速度方向方位角（度）
+        fuelPct: 100,
+        engineMode: 'STANDBY',
+        missionSeconds: 0
+    };
+
+    let startTime = Date.now();
+    let frameId;
+
+    /* --- INITIALIZATION --- */
+    function init() {
+        resize();
+        window.addEventListener('resize', resize);
+        setupInputs();
+        resetGame();
+        loop();
+    }
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+
+    function setupInputs() {
+        const handleKey = (code, val) => {
+            if(code === 'ArrowUp' || code === 'KeyW') input.up = val;
+            if(code === 'ArrowLeft' || code === 'KeyA') input.left = val;
+            if(code === 'ArrowRight' || code === 'KeyD') input.right = val;
+            if(code === 'Space') input.brake = val;
+        };
+        window.addEventListener('keydown', e => handleKey(e.code, true));
+        window.addEventListener('keyup', e => handleKey(e.code, false));
+
+        const bindTouch = (id, key) => {
+            const el = document.getElementById(id);
+            if(!el) return;
+            el.addEventListener('touchstart', e => { e.preventDefault(); input[key] = true; });
+            el.addEventListener('touchend', e => { e.preventDefault(); input[key] = false; });
+            el.addEventListener('mousedown', e => { input[key] = true; });
+            el.addEventListener('mouseup', e => { input[key] = false; });
+        };
+        bindTouch('btn-thrust', 'up');
+        bindTouch('btn-left', 'left');
+        bindTouch('btn-right', 'right');
+        bindTouch('btn-brake', 'brake');
+        
+        elRestart.addEventListener('click', resetGame);
+    }
+
+    function resetGame() {
+        ship.x = (Math.random() > 0.5 ? 1 : -1) * (600 + Math.random()*400);
+        ship.y = (Math.random() > 0.5 ? 1 : -1) * (600 + Math.random()*400);
+        // Point generally towards center but with drift
+        ship.vx = -ship.x / 1000 + (Math.random()-0.5); 
+        ship.vy = -ship.y / 1000 + (Math.random()-0.5);
+        ship.angle = Math.PI; // Upside down initially often
+        ship.fuel = 100;
+        
+        STATE.current = STATE.playing;
+        startTime = Date.now();
+        elAlert.classList.add('hidden');
+    }
+
+    /* --- LOGIC --- */
+    function updatePhysics() {
+        if(STATE.current !== STATE.playing) return;
+
+        // Mission elapsed time
+        const now = Date.now();
+        telemetry.missionSeconds = (now - startTime) / 1000;
+
+        // Rotation
+        if(input.left) ship.angle -= CONFIG.rotationSpeed;
+        if(input.right) ship.angle += CONFIG.rotationSpeed;
+
+        // Thrust
+        let isThrusting = false;
+        if(input.up && ship.fuel > 0) {
+            isThrusting = true;
+            ship.vx += Math.sin(ship.angle) * CONFIG.thrust;
+            ship.vy -= Math.cos(ship.angle) * CONFIG.thrust;
+            ship.fuel -= 0.15;
+        }
+
+        // Brake (RCS)
+        if(input.brake && ship.fuel > 0) {
+            ship.vx *= 0.96;
+            ship.vy *= 0.96;
+            ship.fuel -= 0.2;
+            telemetry.engineMode = "DAMPENING";
+        } else if(isThrusting) {
+            telemetry.engineMode = "ENGINE";
+        } else {
+            telemetry.engineMode = "DRIFT";
+        }
+
+        // Move
+        ship.x += ship.vx;
+        ship.y += ship.vy;
+
+        // Telemetry values for HUD
+        const vVal = Math.sqrt(ship.vx*ship.vx + ship.vy*ship.vy);
+        const dist = Math.sqrt(ship.x*ship.x + ship.y*ship.y);
+        telemetry.speed = vVal;
+        telemetry.distance = dist;
+
+        // Radial speed component：沿着 ship->target 方向的速度，负值代表接近目标
+        if(dist > 0.0001) {
+            const nx = ship.x / dist;
+            const ny = ship.y / dist;
+            telemetry.radialSpeed = ship.vx * nx + ship.vy * ny;
+        } else {
+            telemetry.radialSpeed = 0;
+        }
+
+        // Heading based on velocity向量，0° 指向正上方，顺时针增加
+        if(vVal > 0.0001) {
+            const angle = Math.atan2(ship.vx, -ship.vy); // 将“上”作为 0°
+            telemetry.headingDeg = (angle * 180 / Math.PI + 360) % 360;
+        }
+
+        telemetry.fuelPct = Math.max(0, ship.fuel);
+
+        // Landing Logic
+        if(dist < 50) {
+            if(vVal < CONFIG.safeSpeed) {
+                endGame(true);
+            } else {
+                endGame(false);
+            }
+        }
+        if(ship.fuel <= 0 && vVal < 0.1) endGame(false); // Stranded
+    }
+
+    function endGame(success) {
+        STATE.current = success ? STATE.landed : STATE.crashed;
+        elAlert.classList.remove('hidden');
+        if(success) {
+            elAlertTitle.innerText = "TOUCHDOWN CONFIRMED";
+            elAlertTitle.className = "text-3xl font-bold text-[var(--hud-color)] glow-text mb-2";
+            elAlertSub.innerText = "SYSTEMS SECURED. WELCOME TO LUNA.";
+            elRestart.innerText = "NEXT SIMULATION";
+            elRestart.className = "mt-4 px-4 py-1 border border-[var(--hud-color)] text-[var(--hud-color)] hover:bg-[var(--hud-dim)]";
+        } else {
+            elAlertTitle.innerText = "CRITICAL FAILURE";
+            elAlertTitle.className = "text-3xl font-bold text-red-500 glow-warn mb-2";
+            elAlertSub.innerText = "STRUCTURAL INTEGRITY COMPROMISED";
+            elRestart.innerText = "REBOOT SYSTEM";
+            elRestart.className = "mt-4 px-4 py-1 border border-red-500 text-red-500 hover:bg-red-900";
+        }
+    }
+
+    /* --- RENDERING --- */
+    function draw() {
+        // Clear background
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2 + 30; // 稍微下移，让顶部 HUD 有空间
+
+        const radarRadius = Math.min(canvas.width, canvas.height) * 0.28;
+        const innerRadius = radarRadius * 0.55;
+
+        // --- 背景世界层：飞船固定在中心，地形和靶点移动 ---
+        ctx.save();
+        ctx.translate(cx, cy);
+
+        // 地形（和旧版本类似的“雷达山脉/陨石坑”）
+        ctx.strokeStyle = '#223333';
+        ctx.lineWidth = 1;
+        terrainFeatures.forEach(feat => {
+            const sx = feat.x - ship.x;
+            const sy = feat.y - ship.y;
+            const screenX = cx + sx;
+            const screenY = cy + sy;
+            if(screenX < -feat.r || screenX > canvas.width + feat.r ||
+               screenY < -feat.r || screenY > canvas.height + feat.r) return;
+
+            ctx.beginPath();
+            ctx.arc(sx, sy, feat.r, 0, Math.PI * 2);
+            if(feat.type === 'crater') {
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(sx, sy, feat.r * 0.7, 0, Math.PI * 2);
+                ctx.strokeStyle = '#1a2a2a';
+                ctx.stroke();
+                ctx.strokeStyle = '#223333';
+            } else {
+                ctx.fillStyle = '#112222';
+                ctx.fill();
+                ctx.fillStyle = '#050505';
+            }
+        });
+
+        // 计划着陆点靶标（迷你着陆区网格，世界坐标 0,0）
+        const targetXWorld = -ship.x;
+        const targetYWorld = -ship.y;
+        ctx.save();
+        ctx.translate(targetXWorld, targetYWorld);
+        ctx.strokeStyle = 'rgba(160,160,160,0.9)';
+        ctx.lineWidth = 1.5;
+        const worldGridSize = 120;
+        drawLandingGrid(ctx, worldGridSize);
+        ctx.restore();
+
+        ctx.restore(); // 结束世界层
+
+        // --- 雷达圆盘 HUD：以飞船为中心 ---
+        ctx.save();
+        ctx.translate(cx, cy);
+
+        // 外圈姿态仪（点线圆 + 上下各一段 -40~40° 标度，随飞船姿态旋转）
+        drawAttitudeRing(ctx, radarRadius, ship.angle);
+
+        // 内圈虚线（保持为距离参考圈）
+        ctx.save();
+        ctx.setLineDash([4, 6]);
+        ctx.strokeStyle = 'rgba(0, 255, 204, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, 0, innerRadius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        // 中央飞船标记（始终在画面中心）
+        ctx.strokeStyle = 'rgba(0, 255, 204, 0.9)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const crossR = 14;
+        ctx.moveTo(-crossR, 0); ctx.lineTo(crossR, 0);
+        ctx.moveTo(0, -crossR); ctx.lineTo(0, crossR);
+        ctx.stroke();
+
+        // 计划着陆点在雷达中的位置（迷你着陆区网格）
+        const maxDisplayDist = 1000; // 对应雷达内圈附近约 1km
+        const distNorm = Math.min(telemetry.distance / maxDisplayDist, 1);
+        const targetR = distNorm * innerRadius;
+        const targetAngle = Math.atan2(-ship.x, ship.y); // ship -> target 向量
+        const targetX = Math.sin(targetAngle) * targetR;
+        const targetY = Math.cos(targetAngle) * targetR;
+
+        ctx.save();
+        ctx.translate(targetX, targetY);
+        ctx.strokeStyle = 'rgba(160,160,160,0.9)';
+        ctx.lineWidth = 1.2;
+        const radarGridSize = 64;
+        drawLandingGrid(ctx, radarGridSize);
+        ctx.restore();
+
+        // 速度向量（紫色，从飞船中心出发）
+        const velScale = 25;
+        const vx = ship.vx * velScale;
+        const vy = -ship.vy * velScale;
+
+        ctx.save();
+        ctx.strokeStyle = '#a855f7';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(vx, vy);
+        ctx.stroke();
+
+        const arrowAngle = Math.atan2(vy, vx);
+        ctx.translate(vx, vy);
+        ctx.rotate(arrowAngle);
+        ctx.fillStyle = '#a855f7';
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(-8, -4);
+        ctx.lineTo(-8, 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // 飞船姿态图标（绿色箭头，始终在中心）
+        ctx.save();
+        ctx.rotate(ship.angle);
+        ctx.beginPath();
+        ctx.strokeStyle = '#00ffcc';
+        ctx.lineWidth = 2;
+        ctx.moveTo(0, -12);
+        ctx.lineTo(8, 8);
+        ctx.lineTo(0, 2);
+        ctx.lineTo(-8, 8);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+
+        // 距离/矢量标签（灰底小标签）
+        ctx.font = '12px "Share Tech Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const distanceText = telemetry.distance >= 1000
+            ? (telemetry.distance / 1000).toFixed(1) + 'km'
+            : telemetry.distance.toFixed(1) + 'm';
+        const vecText = (telemetry.speed / 1000).toFixed(1) + 'km';
+
+        // 飞船到靶点距离标签（沿连接线）
+        const midX = targetX * 0.5;
+        const midY = targetY * 0.5 - 18;
+        drawLabelBox(ctx, midX, midY, distanceText);
+
+        // 速度向量末端标签
+        const tipLabelX = vx + 40 * Math.cos(arrowAngle);
+        const tipLabelY = vy + 40 * Math.sin(arrowAngle);
+        drawLabelBox(ctx, tipLabelX, tipLabelY, vecText);
+
+        // // 右上角迷你着陆区网格
+        // const miniSize = radarRadius * 0.35;
+        // const miniX = radarRadius * 0.55;
+        // const miniY = -radarRadius * 0.1;
+        // ctx.save();
+        // ctx.translate(miniX, miniY);
+        // ctx.strokeStyle = 'rgba(180, 180, 180, 0.8)';
+        // ctx.lineWidth = 1;
+        // drawLandingGrid(ctx, miniSize);
+        // ctx.restore();
+
+        ctx.restore(); // 结束雷达 transform
+
+        // --- 右侧高度标尺 ---
+        const tapeRight = canvas.width * 0.8;
+        const tapeTop = canvas.height * 0.15;
+        const tapeBottom = canvas.height * 0.85;
+        const tapeHeight = tapeBottom - tapeTop;
+        const maxAlt = 800;
+
+        ctx.strokeStyle = 'rgba(0, 255, 204, 0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(tapeRight, tapeTop);
+        ctx.lineTo(tapeRight, tapeBottom);
+        ctx.stroke();
+
+        ctx.font = '11px "Share Tech Mono", monospace';
+        ctx.fillStyle = 'rgba(0, 255, 204, 0.8)';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+
+        for(let h = 0; h <= maxAlt; h += 50) {
+            const t = h / maxAlt;
+            const y = tapeBottom - t * tapeHeight;
+            const tickLen = h % 100 === 0 ? 16 : 10;
+            ctx.beginPath();
+            ctx.moveTo(tapeRight, y);
+            ctx.lineTo(tapeRight + tickLen, y);
+            ctx.stroke();
+
+            if(h % 100 === 0) {
+                ctx.fillText(String(h), tapeRight + tickLen + 6, y);
+            }
+        }
+
+        // 当前高度指示箭头
+        const clampedAlt = Math.max(0, Math.min(maxAlt, telemetry.distance));
+        const tAlt = clampedAlt / maxAlt;
+        const altY = tapeBottom - tAlt * tapeHeight;
+
+        const markerWidth = 80;
+        const markerHeight = 22;
+        ctx.fillStyle = '#00ff66';
+        ctx.beginPath();
+        ctx.moveTo(tapeRight - 8, altY);
+        ctx.lineTo(tapeRight + 4, altY - 8);
+        ctx.lineTo(tapeRight + 4, altY + 8);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.strokeStyle = '#00ff66';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.rect(tapeRight + 12, altY - markerHeight/2, markerWidth, markerHeight);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#00ff66';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(clampedAlt.toFixed(0) + 'm', tapeRight + 12 + markerWidth/2, altY);
+
+        // --- 顶部 HUD 盒子 ---
+        const boxWidth = 130;
+        const boxHeight = 44;
+        const boxPad = 8;
+
+        // 左上速度+方位
+        const topY = canvas.height * 0.08;
+        const leftX = canvas.width * 0.22 - boxWidth / 2;
+        drawHudBox(
+            leftX,
+            topY,
+            boxWidth,
+            boxHeight,
+            '#001a16',
+            '#00ffcc',
+            () => {
+                ctx.fillStyle = '#00ffcc';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = '16px "Share Tech Mono", monospace';
+                ctx.fillText(telemetry.speed.toFixed(1) + ' m/s', leftX + boxWidth / 2, topY + 14);
+                ctx.font = '14px "Share Tech Mono", monospace';
+                ctx.fillText(telemetry.headingDeg.toFixed(1) + '°', leftX + boxWidth / 2, topY + 30);
+            }
+        );
+
+        // 中间顶部：径向速度（紫框）
+        const centerX = canvas.width / 2 - boxWidth / 2;
+        drawHudBox(
+            centerX,
+            topY - 10,
+            boxWidth,
+            boxHeight,
+            '#1a0020',
+            '#d946ef',
+            () => {
+                ctx.fillStyle = '#f5d0fe';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = '18px "Share Tech Mono", monospace';
+                ctx.fillText(telemetry.radialSpeed.toFixed(1), centerX + boxWidth / 2, topY + 12);
+            }
+        );
+
+        // 中心上方字幕（类似 “0H”）
+        const centerSubY = topY + boxHeight + 4;
+        const subWidth = 90;
+        drawHudBox(
+            canvas.width / 2 - subWidth / 2,
+            centerSubY,
+            subWidth,
+            30,
+            '#001a16',
+            '#00ffcc',
+            () => {
+                ctx.fillStyle = '#00ffcc';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = '14px "Share Tech Mono", monospace';
+                ctx.fillText('0H', canvas.width / 2, centerSubY + 15);
+            }
+        );
+
+        // 右上：垂直速度+简易 RA 代码
+        const rightX = canvas.width * 0.78 - boxWidth / 2;
+        drawHudBox(
+            rightX,
+            topY,
+            boxWidth,
+            boxHeight,
+            '#001a16',
+            '#00ffcc',
+            () => {
+                ctx.fillStyle = '#00ffcc';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = '16px "Share Tech Mono", monospace';
+                const vVert = -ship.vy;
+                ctx.fillText(vVert.toFixed(1) + ' m/s', rightX + boxWidth / 2, topY + 14);
+                ctx.font = '14px "Share Tech Mono", monospace';
+                const ra = 'RA' + String(Math.floor(telemetry.distance)).padStart(4, '0');
+                ctx.fillText(ra, rightX + boxWidth / 2, topY + 30);
+            }
+        );
+
+        // --- 底部燃料百分比 ---
+        const fuelBoxWidth = 160;
+        const fuelBoxHeight = 40;
+        const fuelX = canvas.width * 0.78 - fuelBoxWidth / 2;
+        const fuelY = canvas.height * 0.86;
+        drawHudBox(
+            fuelX,
+            fuelY,
+            fuelBoxWidth,
+            fuelBoxHeight,
+            '#001a16',
+            '#00ffcc',
+            () => {
+                ctx.fillStyle = '#00ffcc';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = '18px "Share Tech Mono", monospace';
+                ctx.fillText(telemetry.fuelPct.toFixed(1) + '%', fuelX + fuelBoxWidth / 2, fuelY + fuelBoxHeight / 2);
+            }
+        );
+
+        // --- 底部左侧警告条 ---
+        const warnWidth = 200;
+        const warnHeight = 40;
+        const warnX = canvas.width * 0.22 - warnWidth / 2;
+        const warnY = canvas.height * 0.86;
+        const isDanger = telemetry.distance < 80 && telemetry.speed > CONFIG.safeSpeed;
+
+        ctx.fillStyle = isDanger ? 'rgba(120, 0, 0, 0.9)' : 'rgba(30, 0, 0, 0.9)';
+        ctx.strokeStyle = isDanger ? '#ff3333' : '#aa3333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(warnX, warnY, warnWidth, warnHeight);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = isDanger ? '#ff3333' : '#ff6666';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '18px "Share Tech Mono", monospace';
+        ctx.fillText('警告', warnX + warnWidth / 2, warnY + warnHeight / 2);
+
+        // （可选）左下角显示任务时间
+        ctx.fillStyle = 'rgba(0, 255, 204, 0.7)';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        ctx.font = '12px "Share Tech Mono", monospace';
+        const t = telemetry.missionSeconds;
+        const h = String(Math.floor(t / 3600)).padStart(2, '0');
+        const m = String(Math.floor((t % 3600) / 60)).padStart(2, '0');
+        const s = String(Math.floor(t % 60)).padStart(2, '0');
+        ctx.fillText(`T+ ${h}:${m}:${s}`, 20, canvas.height - 18);
+    }
+
+    function loop() {
+        updatePhysics();
+        draw();
+        frameId = requestAnimationFrame(loop);
+    }
+
+    // 绘制 HUD 外框和内容的辅助函数
+    function drawHudBox(x, y, w, h, fillColor, borderColor, drawContent) {
+        ctx.save();
+        ctx.fillStyle = fillColor;
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.fill();
+        ctx.stroke();
+        drawContent();
+        ctx.restore();
+    }
+
+    // 居中标签（黑底小圆角矩形）
+    function drawLabelBox(context, x, y, text) {
+        const paddingX = 10;
+        const paddingY = 4;
+        context.save();
+        context.font = '12px "Share Tech Mono", monospace';
+        const textWidth = context.measureText(text).width;
+        const boxWidth = textWidth + paddingX * 2;
+        const boxHeight = 20;
+        const rx = x - boxWidth / 2;
+        const ry = y - boxHeight / 2;
+
+        context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        context.strokeStyle = 'rgba(50, 50, 50, 0.9)';
+        context.lineWidth = 1;
+        context.beginPath();
+        context.rect(rx, ry, boxWidth, boxHeight);
+        context.fill();
+        context.stroke();
+
+        context.fillStyle = '#d1d5db';
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillText(text, x, y);
+        context.restore();
+    }
+
+    // 着陆区网格：正方形边框 + 多个同心圆 + 十字
+    function drawLandingGrid(context, size) {
+        const half = size / 2;
+        const rings = 3;
+
+        // 外框
+        // context.beginPath();
+        // context.rect(-half, -half, size, size);
+        // context.stroke();
+
+        // 同心圆
+        for (let i = 1; i <= rings; i++) {
+            context.beginPath();
+            context.arc(0, 0, half * (i / rings), 0, Math.PI * 2);
+            context.stroke();
+        }
+
+        // 十字
+        context.beginPath();
+        context.moveTo(-half, 0);
+        context.lineTo(half, 0);
+        context.moveTo(0, -half);
+        context.lineTo(0, half);
+        context.stroke();
+    }
+
+    // 姿态仪外圈：点线圆 + 上下各一段 -40~40° 标度，随 ship.angle 旋转
+    function drawAttitudeRing(context, radius, attitudeRad) {
+        context.save();
+
+        // 外圈点线圆
+        context.save();
+        context.setLineDash([2, 4]);
+        context.strokeStyle = 'rgba(0, 255, 204, 0.9)';
+        context.lineWidth = 1.5;
+        context.beginPath();
+        context.arc(0, 0, radius, 0, Math.PI * 2);
+        context.stroke();
+        context.restore();
+
+        // 让刻度随姿态旋转：飞船右倾，刻度向相反方向转动
+        context.rotate(-attitudeRad);
+
+        const maxDeg = 40;
+        const majorStep = 10;
+        const minorStep = 2;
+
+        context.strokeStyle = 'rgba(0, 255, 204, 0.9)';
+        context.fillStyle = 'rgba(0, 255, 204, 0.9)';
+        context.font = '11px "Share Tech Mono", monospace';
+        context.textAlign = 'center';
+
+        // 顶部和底部各一段 -40~40°
+        drawAttitudeArcBand(context, radius, -Math.PI / 2, maxDeg, majorStep, minorStep, true);  // 顶部
+        drawAttitudeArcBand(context, radius,  Math.PI / 2, maxDeg, majorStep, minorStep, false); // 底部
+
+        context.restore();
+    }
+
+    // 单个弧段的刻度绘制
+    function drawAttitudeArcBand(context, radius, baseAngle, maxDeg, majorStep, minorStep, isTop) {
+        const innerOffset = 4;
+        const minorLen = 8;
+        const majorLen = 16;
+        const zeroLen  = 22;
+
+        context.textBaseline = isTop ? 'bottom' : 'top';
+
+        for (let deg = -maxDeg; deg <= maxDeg; deg += minorStep) {
+            const rad = baseAngle + (deg * Math.PI / 180);
+            const cos = Math.cos(rad);
+            const sin = Math.sin(rad);
+
+            const rInner = radius + innerOffset;
+            let rOuter = radius + innerOffset + minorLen;
+
+            if (deg % majorStep === 0) {
+                rOuter = radius + innerOffset + majorLen;
+            }
+            if (deg === 0) {
+                rOuter = radius + innerOffset + zeroLen;
+            }
+
+            const x0 = cos * rInner;
+            const y0 = sin * rInner;
+            const x1 = cos * rOuter;
+            const y1 = sin * rOuter;
+
+            context.beginPath();
+            context.moveTo(x0, y0);
+            context.lineTo(x1, y1);
+            context.stroke();
+
+            if (deg % majorStep === 0) {
+                const labelR = rOuter + 10;
+                const tx = Math.cos(rad) * labelR;
+                const ty = Math.sin(rad) * labelR;
+
+                context.save();
+                context.translate(tx, ty);
+                // 让数字大致保持竖直
+                const labelAngle = rad + (isTop ? 0 : Math.PI);
+                context.rotate(labelAngle);
+                context.fillText(String(deg), 0, isTop ? 0 : 0);
+                context.restore();
+            }
+
+            // 0° 位置使用亮一点的颜色（蓝绿色）
+            if (deg === 0) {
+                context.save();
+                context.strokeStyle = '#3b82f6';
+                context.lineWidth = 2;
+                context.beginPath();
+                context.moveTo(x0, y0);
+                context.lineTo(x1, y1);
+                context.stroke();
+                context.restore();
+            }
+        }
+    }
+
+    // Run
+    init();
+
+</script>
+</body>
+</html>
