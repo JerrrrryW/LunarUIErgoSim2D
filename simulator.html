@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>LUNAR HUD // 着陆诱导系统</title>
+    <title>月面 HUD // 着陆诱导系统</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
@@ -145,9 +145,9 @@
     <!-- CENTER ALERTS (success / failure overlay, keep existing) -->
     <div id="center-alert" class="hud-element top-1/3 left-0 w-full text-center hidden">
         <div class="inline-block bg-black/80 border border-red-500 px-6 py-4">
-            <h1 id="alert-title" class="text-3xl font-bold glow-warn mb-2">WARNING</h1>
-            <p id="alert-sub" class="text-red-300 text-sm">HIGH VELOCITY IMPACT PREDICTED</p>
-            <button id="restart-btn" class="mt-4 px-4 py-1 border border-red-500 text-red-500 hover:bg-red-900 pointer-events-auto">SYSTEM REBOOT</button>
+            <h1 id="alert-title" class="text-3xl font-bold glow-warn mb-2">警告</h1>
+            <p id="alert-sub" class="text-red-300 text-sm">检测到高速碰撞风险</p>
+            <button id="restart-btn" class="mt-4 px-4 py-1 border border-red-500 text-red-500 hover:bg-red-900 pointer-events-auto">系统重启</button>
         </div>
     </div>
     
@@ -157,7 +157,7 @@
         <button id="btn-right" class="touch-control w-12 h-12 rounded-full text-xl font-bold">→</button>
     </div>
     <div class="hud-element bottom-6 right-6 flex gap-2 md:hidden pointer-events-auto">
-        <button id="btn-brake" class="touch-control w-12 h-12 rounded-full text-xs font-bold border-red-500 text-red-400">STOP</button>
+        <button id="btn-brake" class="touch-control w-12 h-12 rounded-full text-xs font-bold border-red-500 text-red-400">减速</button>
         <button id="btn-thrust" class="touch-control w-16 h-16 rounded-full text-2xl font-bold border-2 shadow-[0_0_15px_var(--hud-color)]">▲</button>
     </div>
 
@@ -196,8 +196,21 @@
         fuel: 100
     };
 
+    const targetPoint = { x: 0, y: 0 };
+
     const input = {
-        up: false, left: false, right: false, brake: false
+        targetUp: false, targetDown: false, targetLeft: false, targetRight: false,
+        velUp: false, velDown: false, velLeft: false, velRight: false
+    };
+
+    const CONTROL = {
+        targetStep: 8,
+        velStepX: 0.02,
+        velStepY: 0.02,
+        targetDrift: 1.5,
+        velDriftX: 0.01,
+        velDriftY: 0.01,
+        targetClamp: 1400
     };
 
     // Procedural Terrain Data
@@ -230,7 +243,7 @@
         radialSpeed: 0,    // 朝向/远离目标的速度分量 m/s （<0 表示逼近）
         headingDeg: 0,     // 速度方向方位角（度）
         fuelPct: 100,
-        engineMode: 'STANDBY',
+        engineMode: '待命',
         missionSeconds: 0
     };
 
@@ -253,10 +266,14 @@
 
     function setupInputs() {
         const handleKey = (code, val) => {
-            if(code === 'ArrowUp' || code === 'KeyW') input.up = val;
-            if(code === 'ArrowLeft' || code === 'KeyA') input.left = val;
-            if(code === 'ArrowRight' || code === 'KeyD') input.right = val;
-            if(code === 'Space') input.brake = val;
+            if(code === 'KeyW') input.targetUp = val;
+            if(code === 'KeyS') input.targetDown = val;
+            if(code === 'KeyA') input.targetLeft = val;
+            if(code === 'KeyD') input.targetRight = val;
+            if(code === 'ArrowUp') input.velUp = val;
+            if(code === 'ArrowDown') input.velDown = val;
+            if(code === 'ArrowLeft') input.velLeft = val;
+            if(code === 'ArrowRight') input.velRight = val;
         };
         window.addEventListener('keydown', e => {
             handleKey(e.code, true);
@@ -264,8 +281,16 @@
             if (e.code === 'KeyM') {
                 CONFIG.showMoonBackground = !CONFIG.showMoonBackground;
             }
+            if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
+                e.preventDefault();
+            }
         });
-        window.addEventListener('keyup', e => handleKey(e.code, false));
+        window.addEventListener('keyup', e => {
+            handleKey(e.code, false);
+            if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
+                e.preventDefault();
+            }
+        });
 
         const bindTouch = (id, key) => {
             const el = document.getElementById(id);
@@ -275,10 +300,10 @@
             el.addEventListener('mousedown', e => { input[key] = true; });
             el.addEventListener('mouseup', e => { input[key] = false; });
         };
-        bindTouch('btn-thrust', 'up');
-        bindTouch('btn-left', 'left');
-        bindTouch('btn-right', 'right');
-        bindTouch('btn-brake', 'brake');
+        bindTouch('btn-thrust', 'velUp');
+        bindTouch('btn-left', 'velLeft');
+        bindTouch('btn-right', 'velRight');
+        bindTouch('btn-brake', 'velDown');
         
         elRestart.addEventListener('click', resetGame);
     }
@@ -289,8 +314,12 @@
         // Point generally towards center but with drift
         ship.vx = -ship.x / 1000 + (Math.random()-0.5); 
         ship.vy = -ship.y / 1000 + (Math.random()-0.5);
+        ship.vx = Math.abs(ship.vx);   // 水平速度默认正向
+        ship.vy = -Math.abs(ship.vy);  // 垂直速度默认为负（下降）
         ship.angle = Math.PI; // Upside down initially often
         ship.fuel = 100;
+        targetPoint.x = 0;
+        targetPoint.y = 0;
         
         STATE.current = STATE.playing;
         startTime = Date.now();
@@ -305,46 +334,52 @@
         const now = Date.now();
         telemetry.missionSeconds = (now - startTime) / 1000;
 
-        // Rotation
-        if(input.left) ship.angle -= CONFIG.rotationSpeed;
-        if(input.right) ship.angle += CONFIG.rotationSpeed;
+        // Target adjust (WASD 控制预期着陆点)
+        if (input.targetUp) targetPoint.y -= CONTROL.targetStep;
+        if (input.targetDown) targetPoint.y += CONTROL.targetStep;
+        if (input.targetLeft) targetPoint.x -= CONTROL.targetStep;
+        if (input.targetRight) targetPoint.x += CONTROL.targetStep;
 
-        // Thrust
-        let isThrusting = false;
-        if(input.up && ship.fuel > 0) {
-            isThrusting = true;
-            ship.vx += Math.sin(ship.angle) * CONFIG.thrust;
-            ship.vy -= Math.cos(ship.angle) * CONFIG.thrust;
-            ship.fuel -= 0.15;
-        }
+        // 随机波动的预期着陆点
+        targetPoint.x += (Math.random() - 0.5) * CONTROL.targetDrift;
+        targetPoint.y += (Math.random() - 0.5) * CONTROL.targetDrift;
 
-        // Brake (RCS)
-        if(input.brake && ship.fuel > 0) {
-            ship.vx *= 0.96;
-            ship.vy *= 0.96;
-            ship.fuel -= 0.2;
-            telemetry.engineMode = "DAMPENING";
-        } else if(isThrusting) {
-            telemetry.engineMode = "ENGINE";
-        } else {
-            telemetry.engineMode = "DRIFT";
-        }
+        // 限制目标范围
+        targetPoint.x = Math.max(-CONTROL.targetClamp, Math.min(CONTROL.targetClamp, targetPoint.x));
+        targetPoint.y = Math.max(-CONTROL.targetClamp, Math.min(CONTROL.targetClamp, targetPoint.y));
+
+        // 方向键控制速度：上下改垂直速度，左右改水平速度
+        if (input.velUp) ship.vy += CONTROL.velStepY;
+        if (input.velDown) ship.vy -= CONTROL.velStepY;
+        if (input.velLeft) ship.vx -= CONTROL.velStepX;
+        if (input.velRight) ship.vx += CONTROL.velStepX;
+        telemetry.engineMode = (input.velUp || input.velDown || input.velLeft || input.velRight) ? '手动调整' : '漂移';
+
+        // 速度随机波动
+        ship.vx += (Math.random() - 0.5) * CONTROL.velDriftX;
+        ship.vy += (Math.random() - 0.5) * CONTROL.velDriftY;
+        ship.vx = Math.max(-5, Math.min(5, ship.vx));
+        ship.vy = Math.max(-5, Math.min(5, ship.vy));
 
         // Move
         ship.x += ship.vx;
         ship.y += ship.vy;
 
+        if (Math.abs(ship.vx) + Math.abs(ship.vy) > 0.0001) {
+            ship.angle = Math.atan2(ship.vx, -ship.vy);
+        }
+
         // Telemetry values for HUD
         const vVal = Math.sqrt(ship.vx*ship.vx + ship.vy*ship.vy);
-        const dist = Math.sqrt(ship.x*ship.x + ship.y*ship.y);
+        const dx = targetPoint.x - ship.x;
+        const dy = targetPoint.y - ship.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
         telemetry.speed = vVal;
         telemetry.distance = dist;
 
-        // Radial speed component：沿着 ship->target 方向的速度，负值代表接近目标
+        // 径向速度：负值代表正在逼近目标
         if(dist > 0.0001) {
-            const nx = ship.x / dist;
-            const ny = ship.y / dist;
-            telemetry.radialSpeed = ship.vx * nx + ship.vy * ny;
+            telemetry.radialSpeed = -(ship.vx * dx + ship.vy * dy) / dist;
         } else {
             telemetry.radialSpeed = 0;
         }
@@ -372,16 +407,16 @@
         STATE.current = success ? STATE.landed : STATE.crashed;
         elAlert.classList.remove('hidden');
         if(success) {
-            elAlertTitle.innerText = "TOUCHDOWN CONFIRMED";
+            elAlertTitle.innerText = "着陆成功";
             elAlertTitle.className = "text-3xl font-bold text-[var(--hud-color)] glow-text mb-2";
-            elAlertSub.innerText = "SYSTEMS SECURED. WELCOME TO LUNA.";
-            elRestart.innerText = "NEXT SIMULATION";
+            elAlertSub.innerText = "系统稳定，欢迎登陆月面。";
+            elRestart.innerText = "下一次模拟";
             elRestart.className = "mt-4 px-4 py-1 border border-[var(--hud-color)] text-[var(--hud-color)] hover:bg-[var(--hud-dim)]";
         } else {
-            elAlertTitle.innerText = "CRITICAL FAILURE";
+            elAlertTitle.innerText = "任务失败";
             elAlertTitle.className = "text-3xl font-bold text-red-500 glow-warn mb-2";
-            elAlertSub.innerText = "STRUCTURAL INTEGRITY COMPROMISED";
-            elRestart.innerText = "REBOOT SYSTEM";
+            elAlertSub.innerText = "结构破损，安全终止。";
+            elRestart.innerText = "重新启动";
             elRestart.className = "mt-4 px-4 py-1 border border-red-500 text-red-500 hover:bg-red-900";
         }
     }
@@ -450,9 +485,9 @@
             }
         });
 
-        // 计划着陆点靶标（迷你着陆区网格，世界坐标 0,0）
-        const targetXWorld = -ship.x;
-        const targetYWorld = -ship.y;
+        // 计划着陆点靶标（迷你着陆区网格，世界坐标 targetPoint）
+        const targetXWorld = targetPoint.x - ship.x;
+        const targetYWorld = targetPoint.y - ship.y;
         ctx.save();
         ctx.translate(targetXWorld, targetYWorld);
         ctx.strokeStyle = 'rgba(160,160,160,0.9)';
@@ -491,11 +526,17 @@
 
         // 计划着陆点在雷达中的位置（迷你着陆区网格）
         const maxDisplayDist = 1000; // 对应雷达内圈附近约 1km
-        const distNorm = Math.min(telemetry.distance / maxDisplayDist, 1);
+        const targetDx = targetPoint.x - ship.x;
+        const targetDy = targetPoint.y - ship.y;
+        const targetDist = Math.sqrt(targetDx*targetDx + targetDy*targetDy);
+        const distNorm = Math.min(targetDist / maxDisplayDist, 1);
         const targetR = distNorm * innerRadius;
-        const targetAngle = Math.atan2(-ship.x, ship.y); // ship -> target 向量
-        const targetX = Math.sin(targetAngle) * targetR;
-        const targetY = Math.cos(targetAngle) * targetR;
+        let targetX = 0;
+        let targetY = 0;
+        if (targetDist > 0.0001) {
+            targetX = targetDx / targetDist * targetR;
+            targetY = targetDy / targetDist * targetR;
+        }
 
         ctx.save();
         ctx.translate(targetX, targetY);
@@ -505,21 +546,17 @@
         drawLandingGrid(ctx, radarGridSize);
         ctx.restore();
 
-        // 速度向量（紫色，从飞船中心出发，方向与实际速度一致）
-        const velScale = 25;
-        const vx = ship.vx * velScale;
-        const vy = ship.vy * velScale;
-
+        // 预期着陆点方向箭头（紫色，WSAD 控制）
         ctx.save();
         ctx.strokeStyle = '#a855f7';
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.moveTo(0, 0);
-        ctx.lineTo(vx, vy);
+        ctx.lineTo(targetX, targetY);
         ctx.stroke();
 
-        const arrowAngle = Math.atan2(vy, vx);
-        ctx.translate(vx, vy);
+        const arrowAngle = Math.atan2(targetY, targetX);
+        ctx.translate(targetX, targetY);
         ctx.rotate(arrowAngle);
         ctx.fillStyle = '#a855f7';
         ctx.beginPath();
@@ -550,19 +587,18 @@
         ctx.textBaseline = 'middle';
 
         const distanceText = telemetry.distance >= 1000
-            ? (telemetry.distance / 1000).toFixed(1) + 'km'
-            : telemetry.distance.toFixed(1) + 'm';
-        const vecText = (telemetry.speed / 1000).toFixed(1) + 'km';
+            ? (telemetry.distance / 1000).toFixed(1) + ' 公里'
+            : telemetry.distance.toFixed(1) + ' 米';
 
         // 飞船到靶点距离标签（沿连接线）
         const midX = targetX * 0.5;
         const midY = targetY * 0.5 - 18;
         drawLabelBox(ctx, midX, midY, distanceText);
 
-        // 速度向量末端标签
-        const tipLabelX = vx + 40 * Math.cos(arrowAngle);
-        const tipLabelY = vy + 40 * Math.sin(arrowAngle);
-        drawLabelBox(ctx, tipLabelX, tipLabelY, vecText);
+        // 预期靶点标签
+        const tipLabelX = targetX + 40 * Math.cos(arrowAngle);
+        const tipLabelY = targetY + 40 * Math.sin(arrowAngle);
+        drawLabelBox(ctx, tipLabelX, tipLabelY, '预期靶点');
 
         // // 右上角迷你着陆区网格
         // const miniSize = radarRadius * 0.35;
@@ -636,7 +672,7 @@
         ctx.fillStyle = '#00ff66';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(clampedAlt.toFixed(0) + 'm', tapeRight + 12 + markerWidth/2, altY);
+        ctx.fillText(clampedAlt.toFixed(0) + '米', tapeRight + 12 + markerWidth/2, altY);
 
         // --- 顶部 HUD 盒子 ---
         const boxWidth = 130;
@@ -658,9 +694,9 @@
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.font = '16px "Share Tech Mono", monospace';
-                ctx.fillText(telemetry.speed.toFixed(1) + ' m/s', leftX + boxWidth / 2, topY + 14);
+                ctx.fillText('速度 ' + telemetry.speed.toFixed(1) + ' 米/秒', leftX + boxWidth / 2, topY + 14);
                 ctx.font = '14px "Share Tech Mono", monospace';
-                ctx.fillText(telemetry.headingDeg.toFixed(1) + '°', leftX + boxWidth / 2, topY + 30);
+                ctx.fillText('水平 ' + ship.vx.toFixed(1) + ' 米/秒', leftX + boxWidth / 2, topY + 30);
             }
         );
 
@@ -678,7 +714,7 @@
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.font = '18px "Share Tech Mono", monospace';
-                ctx.fillText(telemetry.radialSpeed.toFixed(1), centerX + boxWidth / 2, topY + 12);
+                ctx.fillText('径向 ' + telemetry.radialSpeed.toFixed(1) + ' 米/秒', centerX + boxWidth / 2, topY + 12);
             }
         );
 
@@ -697,7 +733,7 @@
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.font = '14px "Share Tech Mono", monospace';
-                ctx.fillText('0H', canvas.width / 2, centerSubY + 15);
+                ctx.fillText('模式 ' + telemetry.engineMode, canvas.width / 2, centerSubY + 15);
             }
         );
 
@@ -715,10 +751,10 @@
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.font = '16px "Share Tech Mono", monospace';
-                const vVert = -ship.vy;
-                ctx.fillText(vVert.toFixed(1) + ' m/s', rightX + boxWidth / 2, topY + 14);
+                const vVert = ship.vy;
+                ctx.fillText('垂直 ' + vVert.toFixed(1) + ' 米/秒', rightX + boxWidth / 2, topY + 14);
                 ctx.font = '14px "Share Tech Mono", monospace';
-                const ra = 'RA' + String(Math.floor(telemetry.distance)).padStart(4, '0');
+                const ra = '距靶 ' + String(Math.floor(telemetry.distance)).padStart(4, '0') + '米';
                 ctx.fillText(ra, rightX + boxWidth / 2, topY + 30);
             }
         );
@@ -740,7 +776,7 @@
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.font = '18px "Share Tech Mono", monospace';
-                ctx.fillText(telemetry.fuelPct.toFixed(1) + '%', fuelX + fuelBoxWidth / 2, fuelY + fuelBoxHeight / 2);
+                ctx.fillText('燃料 ' + telemetry.fuelPct.toFixed(1) + '%', fuelX + fuelBoxWidth / 2, fuelY + fuelBoxHeight / 2);
             }
         );
 
@@ -774,7 +810,7 @@
         const h = String(Math.floor(t / 3600)).padStart(2, '0');
         const m = String(Math.floor((t % 3600) / 60)).padStart(2, '0');
         const s = String(Math.floor(t % 60)).padStart(2, '0');
-        ctx.fillText(`T+ ${h}:${m}:${s}`, 20, canvas.height - 18);
+        ctx.fillText(`任务时间 T+ ${h}:${m}:${s}`, 20, canvas.height - 18);
     }
 
     function loop() {
