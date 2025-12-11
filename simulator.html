@@ -264,6 +264,12 @@
             if (e.code === 'KeyM') {
                 CONFIG.showMoonBackground = !CONFIG.showMoonBackground;
             }
+            // 结束状态下允许快捷键重启（Enter / Space / R）
+            if ((STATE.current === STATE.landed || STATE.current === STATE.crashed) &&
+                (e.code === 'Enter' || e.code === 'Space' || e.code === 'KeyR')) {
+                e.preventDefault();
+                resetGame();
+            }
         });
         window.addEventListener('keyup', e => handleKey(e.code, false));
 
