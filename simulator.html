@@ -139,7 +139,7 @@
 <div class="hud-container" id="game-container">
     
     <!-- Visual Effects -->
-    <div class="scanlines"></div>
+    <!-- <div class="scanlines"></div> -->
     <div class="noise"></div>
 
     <!-- CENTER ALERTS (success / failure overlay, keep existing) -->
@@ -175,7 +175,8 @@
         worldSize: 3000,
         gridSize: 100, // Size of the target landing pad
         safeSpeed: 1.0, // m/s
-        safeDist: 60 // pixels radius
+        safeDist: 60, // pixels radius
+        showMoonBackground: true
     };
 
     const STATE = {
@@ -257,7 +258,13 @@
             if(code === 'ArrowRight' || code === 'KeyD') input.right = val;
             if(code === 'Space') input.brake = val;
         };
-        window.addEventListener('keydown', e => handleKey(e.code, true));
+        window.addEventListener('keydown', e => {
+            handleKey(e.code, true);
+            // M 键切换是否显示月面背景
+            if (e.code === 'KeyM') {
+                CONFIG.showMoonBackground = !CONFIG.showMoonBackground;
+            }
+        });
         window.addEventListener('keyup', e => handleKey(e.code, false));
 
         const bindTouch = (id, key) => {
@@ -396,23 +403,23 @@
         ctx.save();
         ctx.translate(cx, cy);
 
-        // 月面影像背景（如果图片加载成功）
-        if (moonImage.complete && moonImage.naturalWidth) {
+        // 月面影像背景（如果图片加载成功，且开关为开启）
+        // 让世界坐标 (0,0) 对齐到背景图像的中心，这样目标点与月面纹理保持相对静止
+        if (CONFIG.showMoonBackground && moonImage.complete && moonImage.naturalWidth) {
             const imgW = moonImage.width;
             const imgH = moonImage.height;
-            const scale = Math.max(canvas.width / imgW, canvas.height / imgH) * 1.2; // 稍微放大避免边缘
-            const drawW = imgW * scale;
-            const drawH = imgH * scale;
 
-            // 视差：飞船移动时背景随之明显平移
-            // 系数越大，背景“移动”越多；1 表示和世界坐标等比
-            const parallax = 0.4;
-            const offsetX = -drawW / 2 - ship.x * parallax;
-            const offsetY = -drawH / 2 - ship.y * parallax;
+            // 图像在世界坐标中的原点（使其中心在世界 0,0）
+            const worldImgOriginX = -imgW / 2;
+            const worldImgOriginY = -imgH / 2;
+
+            // 在以飞船为中心的坐标系中绘制：世界坐标减去 ship 位置
+            const drawX = worldImgOriginX - ship.x;
+            const drawY = worldImgOriginY - ship.y;
 
             ctx.save();
-            ctx.globalAlpha = 0.7;
-            ctx.drawImage(moonImage, offsetX, offsetY, drawW, drawH);
+            ctx.globalAlpha = 0.9;
+            ctx.drawImage(moonImage, drawX, drawY);
             ctx.restore();
         }
 
